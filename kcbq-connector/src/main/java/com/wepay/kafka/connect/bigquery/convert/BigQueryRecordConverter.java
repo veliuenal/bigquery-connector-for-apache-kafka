@@ -26,8 +26,7 @@ package com.wepay.kafka.connect.bigquery.convert;
 import com.google.cloud.bigquery.InsertAllRequest.RowToInsert;
 import com.google.protobuf.ByteString;
 import com.wepay.kafka.connect.bigquery.api.KafkaSchemaRecordType;
-import com.wepay.kafka.connect.bigquery.convert.logicaltype.DebeziumLogicalConverters;
-import com.wepay.kafka.connect.bigquery.convert.logicaltype.KafkaLogicalConverters;
+import com.wepay.kafka.connect.bigquery.config.BigQuerySinkConfig.DecimalHandlingMode;
 import com.wepay.kafka.connect.bigquery.convert.logicaltype.LogicalConverterRegistry;
 import com.wepay.kafka.connect.bigquery.convert.logicaltype.LogicalTypeConverter;
 import com.wepay.kafka.connect.bigquery.exception.ConversionConnectException;
@@ -44,10 +43,8 @@ import java.util.stream.Collectors;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
-import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.sink.SinkRecord;
-import io.debezium.data.VariableScaleDecimal;
-import com.wepay.kafka.connect.bigquery.config.BigQuerySinkConfig.DecimalHandlingMode;
+
 /**
  * Class for converting from {@link SinkRecord SinkRecords} and BigQuery rows, which are represented
  * as {@link Map Maps} from {@link String Strings} to {@link Object Objects}.
@@ -60,18 +57,18 @@ public class BigQueryRecordConverter implements RecordConverter<Map<String, Obje
           Integer.class, Long.class, Float.class, Double.class, String.class)
   );
 
-  static {
-    // force registration
-    DebeziumLogicalConverters.initialize();
-    KafkaLogicalConverters.initialize();
+  private final boolean shouldConvertSpecialDouble;
+  private final boolean useStorageWriteApi;
+
+  public BigQueryRecordConverter(boolean shouldConvertDoubleSpecial, boolean useStorageWriteApi) {
+    this.shouldConvertSpecialDouble = shouldConvertDoubleSpecial;
+    this.useStorageWriteApi = useStorageWriteApi;
   }
 
-  private final boolean shouldConvertSpecialDouble;
-  private final boolean shouldConvertDebeziumTimestampToInteger;
-  private final boolean useStorageWriteApi;
-  private final DecimalHandlingMode decimalHandlingMode;
-  private final DecimalHandlingMode variableScaleDecimalHandlingMode;  
-
+  /**
+   * @deprecated use {@link #BigQueryRecordConverter(boolean, boolean)} as all other values are processed during config.
+   */
+  @Deprecated
   public BigQueryRecordConverter(boolean shouldConvertDoubleSpecial,
                                  boolean shouldConvertDebeziumTimestampToInteger,
                                  boolean useStorageWriteApi) {
@@ -79,28 +76,29 @@ public class BigQueryRecordConverter implements RecordConverter<Map<String, Obje
         DecimalHandlingMode.NUMERIC, DecimalHandlingMode.NUMERIC);
   }
 
+  /**
+   * @deprecated use {@link #BigQueryRecordConverter(boolean, boolean)} as all other values are processed during config.
+   */
+  @Deprecated
   public BigQueryRecordConverter(boolean shouldConvertDoubleSpecial,
                                  boolean shouldConvertDebeziumTimestampToInteger,
                                  boolean useStorageWriteApi,
                                  boolean shouldConvertToDebeziumVariableScaleDecimal) {
     this(shouldConvertDoubleSpecial, shouldConvertDebeziumTimestampToInteger, useStorageWriteApi,
         DecimalHandlingMode.NUMERIC,
-        shouldConvertToDebeziumVariableScaleDecimal ? DecimalHandlingMode.NUMERIC : DecimalHandlingMode.NONE);
+        shouldConvertToDebeziumVariableScaleDecimal ? DecimalHandlingMode.NUMERIC : DecimalHandlingMode.RECORD);
   }
 
+  /**
+   * @deprecated use {@link #BigQueryRecordConverter(boolean, boolean)} as all other values are processed during config.
+   */
+  @Deprecated
   public BigQueryRecordConverter(boolean shouldConvertDoubleSpecial,
                                  boolean shouldConvertDebeziumTimestampToInteger,
                                  boolean useStorageWriteApi,
                                  DecimalHandlingMode decimalHandlingMode,
                                  DecimalHandlingMode variableScaleDecimalHandlingMode) {
-    if (variableScaleDecimalHandlingMode != DecimalHandlingMode.NONE) {
-      DebeziumLogicalConverters.registerVariableScaleDecimalConverter();
-    }
-    this.shouldConvertSpecialDouble = shouldConvertDoubleSpecial;
-    this.shouldConvertDebeziumTimestampToInteger = shouldConvertDebeziumTimestampToInteger;
-    this.useStorageWriteApi = useStorageWriteApi;
-    this.decimalHandlingMode = decimalHandlingMode;
-    this.variableScaleDecimalHandlingMode = variableScaleDecimalHandlingMode;    
+    this(shouldConvertDoubleSpecial, useStorageWriteApi);
   }
 
   /**
@@ -182,8 +180,10 @@ public class BigQueryRecordConverter implements RecordConverter<Map<String, Obje
             kafkaConnectSchema.name() + " is not optional, but converting object had null value");
       }
     }
-    if (LogicalConverterRegistry.isRegisteredLogicalType(kafkaConnectSchema.name())) {
-      return convertLogical(kafkaConnectObject, kafkaConnectSchema);
+
+    LogicalTypeConverter converter = LogicalConverterRegistry.getConverter(kafkaConnectSchema.name());
+    if (converter != null) {
+      return converter.convert(kafkaConnectObject);
     }
     Schema.Type kafkaConnectSchemaType = kafkaConnectSchema.type();
     switch (kafkaConnectSchemaType) {
@@ -277,48 +277,6 @@ public class BigQueryRecordConverter implements RecordConverter<Map<String, Obje
       bigQueryEntryList.add(bigQueryEntry);
     }
     return bigQueryEntryList;
-  }
-
-  private Object convertLogical(Object kafkaConnectObject,
-                                Schema kafkaConnectSchema) {
-    String logicalName = kafkaConnectSchema.name();
-    if (Decimal.LOGICAL_NAME.equals(logicalName)) {
-      java.math.BigDecimal decimal = (java.math.BigDecimal) kafkaConnectObject;
-      switch (decimalHandlingMode) {
-        case NONE:
-          Map<String, Object> struct = new HashMap<>();
-          struct.put("scale", decimal.scale());
-          struct.put("value", decimal.unscaledValue().toByteArray());
-          return struct;
-        case FLOAT:
-          return decimal.doubleValue();
-        case NUMERIC:
-        case BIGNUMERIC:
-        default:
-          return decimal;
-      }
-    }
-    if (VariableScaleDecimal.LOGICAL_NAME.equals(logicalName)) {
-      LogicalTypeConverter converter =
-          LogicalConverterRegistry.getConverter(logicalName);
-      java.math.BigDecimal decimal = (java.math.BigDecimal) converter.convert(kafkaConnectObject);
-      switch (variableScaleDecimalHandlingMode) {
-        case FLOAT:
-          return decimal.doubleValue();
-        case NUMERIC:
-        case BIGNUMERIC:
-        default:
-          return decimal;
-      }
-    }
-
-    LogicalTypeConverter converter =
-        LogicalConverterRegistry.getConverter(logicalName);
-    if (shouldConvertDebeziumTimestampToInteger
-        && converter instanceof DebeziumLogicalConverters.TimestampConverter) {
-      return (Long) kafkaConnectObject;
-    }
-    return converter.convert(kafkaConnectObject);
   }
 
   /**
