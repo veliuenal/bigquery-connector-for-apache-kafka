@@ -268,7 +268,7 @@ public class SchemaManager {
    * @param table   The BigQuery table to update.
    * @param records The sink records used to update the schema.
    */
-  public void updateSchema(TableId table, List<SinkRecord> records) {
+  public void updateSchema(TableId table, List<SinkRecord> records) { // 4
     synchronized (lock(tableUpdateLocks, table)) {
       TableInfo tableInfo = getTableInfo(table, records, false);
       if (!schemaCache.containsKey(table)) {
@@ -278,7 +278,7 @@ public class SchemaManager {
       if (!schemaCache.get(table).equals(tableInfo.getDefinition().getSchema())) {
         logger.info("Attempting to update {} with schema {}",
             table(table), tableInfo.getDefinition().getSchema());
-        bigQuery.update(tableInfo);
+        bigQuery.update(tableInfo); // 5
         logger.debug("Successfully updated {}", table(table));
         schemaCache.put(table, tableInfo.getDefinition().getSchema());
       } else {

@@ -88,6 +88,8 @@ public class BigQuerySinkConfig extends AbstractConfig {
   public static final String GCS_BUCKET_NAME_CONFIG = "gcsBucketName";
   public static final String GCS_FOLDER_NAME_CONFIG = "gcsFolderName";
   public static final String GCS_FOLDER_NAME_DEFAULT = "";
+  public static final String GCS_LOAD_AUTODETECT_CONFIG = "gcsLoad.autodetect";
+  public static final Boolean GCS_LOAD_AUTODETECT_DEFAULT = false;  
   public static final String PROJECT_CONFIG = "project";
   public static final String DEFAULT_DATASET_CONFIG = "defaultDataset";
   public static final String SCHEMA_RETRIEVER_CONFIG = "schemaRetriever";
@@ -381,6 +383,10 @@ public class BigQuerySinkConfig extends AbstractConfig {
   private static final ConfigDef.Importance AUTO_CREATE_BUCKET_IMPORTANCE = ConfigDef.Importance.MEDIUM;
   private static final String AUTO_CREATE_BUCKET_DOC =
       "Whether to automatically create the given bucket, if it does not exist. Only relevant if enableBatchLoad is configured.";
+  private static final ConfigDef.Type GCS_LOAD_AUTODETECT_TYPE = ConfigDef.Type.BOOLEAN;
+  private static final ConfigDef.Importance GCS_LOAD_AUTODETECT_IMPORTANCE = ConfigDef.Importance.LOW;
+  private static final String GCS_LOAD_AUTODETECT_DOC =
+      "Enable BigQuery schema autodetection for JSON or CSV files loaded from GCS.";      
   private static final ConfigDef.Type ALLOW_NEW_BIGQUERY_FIELDS_TYPE = ConfigDef.Type.BOOLEAN;
   private static final ConfigDef.Importance ALLOW_NEW_BIGQUERY_FIELDS_IMPORTANCE = ConfigDef.Importance.MEDIUM;
   private static final String ALLOW_NEW_BIGQUERY_FIELDS_DOC =
@@ -787,6 +793,12 @@ public class BigQuerySinkConfig extends AbstractConfig {
                     .importance(AUTO_CREATE_BUCKET_IMPORTANCE)
                     .documentation(AUTO_CREATE_BUCKET_DOC)
                     .build()
+            ).define(
+                    GCS_LOAD_AUTODETECT_CONFIG,
+                    GCS_LOAD_AUTODETECT_TYPE,
+                    GCS_LOAD_AUTODETECT_DEFAULT,
+                    GCS_LOAD_AUTODETECT_IMPORTANCE,
+                    GCS_LOAD_AUTODETECT_DOC                    
             ).define(
                     ALLOW_NEW_BIGQUERY_FIELDS_CONFIG,
                     ALLOW_NEW_BIGQUERY_FIELDS_TYPE,

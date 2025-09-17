@@ -142,6 +142,8 @@ public class BigQuerySinkTask extends SinkTask {
   private boolean allowNewBigQueryFields;
   private boolean useCredentialsProjectId;
   private boolean allowRequiredFieldRelaxation;
+  private boolean gcsLoadAutodetect;
+
 
   /**
    * Create a new BigquerySinkTask.
@@ -565,9 +567,10 @@ public class BigQuerySinkTask extends SinkTask {
     retryWait = config.getLong(BigQuerySinkConfig.BIGQUERY_RETRY_WAIT_CONFIG);
     allowNewBigQueryFields = config.getBoolean(BigQuerySinkConfig.ALLOW_NEW_BIGQUERY_FIELDS_CONFIG);
     allowRequiredFieldRelaxation = config.getBoolean(BigQuerySinkConfig.ALLOW_BIGQUERY_REQUIRED_FIELD_RELAXATION_CONFIG);
+    gcsLoadAutodetect = config.getBoolean(BigQuerySinkConfig.GCS_LOAD_AUTODETECT_CONFIG);
     topicToPartitionTableId = new HashMap<>();
     bigQuery = new AtomicReference<>();
-    schemaManager = new AtomicReference<>();
+    schemaManager = new AtomicReference<>(); // 3
 
     // Initialise errantRecordReporter
     ErrantRecordReporter errantRecordReporter = null;
@@ -604,7 +607,7 @@ public class BigQuerySinkTask extends SinkTask {
     usePartitionDecorator =
         config.getBoolean(BigQuerySinkConfig.BIGQUERY_PARTITION_DECORATOR_CONFIG);
     if (config.getBoolean(BigQuerySinkTaskConfig.GCS_BQ_TASK_CONFIG)) {
-      startGcsToBqLoadTask();
+      startGcsToBqLoadTask(); // 2
     } else if (upsertDelete) {
       mergeQueries =
           new MergeQueries(config, mergeBatches, executor, getBigQuery(), getSchemaManager(), context);
@@ -704,7 +707,9 @@ public class BigQuerySinkTask extends SinkTask {
         ));
       }
     }
-    GcsToBqLoadRunnable loadRunnable = new GcsToBqLoadRunnable(getBigQuery(), bucket);
+    GcsToBqLoadRunnable loadRunnable =
+        new GcsToBqLoadRunnable(getBigQuery(), bucket, allowNewBigQueryFields,
+            allowRequiredFieldRelaxation, gcsLoadAutodetect);
 
     int intervalSec = config.getInt(BigQuerySinkConfig.BATCH_LOAD_INTERVAL_SEC_CONFIG);
     loadExecutor.scheduleAtFixedRate(loadRunnable, intervalSec, intervalSec, TimeUnit.SECONDS);

@@ -25,6 +25,7 @@ package com.wepay.kafka.connect.bigquery;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -36,9 +37,12 @@ import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.TableId;
+import com.google.cloud.bigquery.JobInfo;
+import com.google.cloud.bigquery.LoadJobConfiguration;
 import com.google.cloud.storage.Blob;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -52,6 +56,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 public class GcsToBqLoadRunnableTest {
@@ -173,6 +178,69 @@ public class GcsToBqLoadRunnableTest {
     when(job.getStatus()).thenReturn(jobStatus);
     args.add(Arguments.of(job.getJobId().getJob(), job, Collections.singletonList(blob), 1, 1, 0));
     return args;
+  }
+
+  private LoadJobConfiguration runLoadJob(boolean allowNew, boolean allowRelax,
+                                           boolean autodetect, String blobName) {
+    BigQuery bigQuery = mock(BigQuery.class);
+    Bucket bucket = mock(Bucket.class);
+    when(bucket.getName()).thenReturn("bucket");
+    Blob blob = mock(Blob.class);
+    when(blob.getName()).thenReturn(blobName);
+    when(blob.getBlobId()).thenReturn(BlobId.of("bucket", blobName));
+    ArgumentCaptor<JobInfo> captor = ArgumentCaptor.forClass(JobInfo.class);
+    Job job = mock(Job.class);
+    when(bigQuery.create(captor.capture())).thenReturn(job);
+    GcsToBqLoadRunnable runnable =
+        new GcsToBqLoadRunnable(bigQuery, bucket, allowNew, allowRelax, autodetect);
+    TableId tableId = TableId.of("d", "t");
+    runnable.triggerBigQueryLoadJob(tableId, Collections.singletonList(blob));
+    return (LoadJobConfiguration) captor.getValue().getConfiguration();
+  }
+
+  @Test
+  void testLoadJobDefaultOptions() {
+    LoadJobConfiguration config = runLoadJob(false, false, false, "file.json");
+    assertTrue(config.getSchemaUpdateOptions() == null
+        || config.getSchemaUpdateOptions().isEmpty());
+    assertFalse(Boolean.TRUE.equals(config.getAutodetect()));
+  }
+
+  @Test
+  void testLoadJobAllowFieldAddition() {
+    LoadJobConfiguration config = runLoadJob(true, false, false, "file.json");
+    assertEquals(1, config.getSchemaUpdateOptions().size());
+    assertTrue(config.getSchemaUpdateOptions()
+        .contains(JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION));
+  }
+
+  @Test
+  void testLoadJobAllowFieldRelaxation() {
+    LoadJobConfiguration config = runLoadJob(false, true, false, "file.json");
+    assertEquals(1, config.getSchemaUpdateOptions().size());
+    assertTrue(config.getSchemaUpdateOptions()
+        .contains(JobInfo.SchemaUpdateOption.ALLOW_FIELD_RELAXATION));
+  }
+
+  @Test
+  void testLoadJobBothSchemaOptions() {
+    LoadJobConfiguration config = runLoadJob(true, true, false, "file.json");
+    assertEquals(2, config.getSchemaUpdateOptions().size());
+    assertTrue(config.getSchemaUpdateOptions()
+        .containsAll(Arrays.asList(JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
+            JobInfo.SchemaUpdateOption.ALLOW_FIELD_RELAXATION)));
+  }
+
+  @Test
+  void testLoadJobAutodetectJson() {
+    LoadJobConfiguration config = runLoadJob(false, false, true, "file.json");
+    assertTrue(config.getAutodetect());
+  }
+
+  @Test
+  void testLoadJobAutodetectIgnoredForAvro() {
+    LoadJobConfiguration config = runLoadJob(false, false, true, "file.avro");
+    assertFalse(Boolean.TRUE.equals(config.getAutodetect()));
   }
 
 }

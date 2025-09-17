@@ -23,6 +23,18 @@
 
 package com.wepay.kafka.connect.bigquery;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.google.api.gax.paging.Page;
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
@@ -39,16 +51,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.re2j.Matcher;
 import com.google.re2j.Pattern;
 import com.wepay.kafka.connect.bigquery.write.row.GcsToBqWriter;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * A Runnable that runs a GCS to BQ Load task.
@@ -81,6 +83,10 @@ public class GcsToBqLoadRunnable implements Runnable {
    */
   private final Set<BlobId> deletableBlobIds;
 
+  private final boolean allowNewBigQueryFields;
+  private final boolean allowRequiredFieldRelaxation;
+  private final boolean gcsLoadAutodetect;
+  
   /**
    * Create a {@link GcsToBqLoadRunnable} with the given bigquery, bucket, and ms wait interval.
    *
@@ -88,8 +94,18 @@ public class GcsToBqLoadRunnable implements Runnable {
    * @param bucket   the GCS bucket to read from.
    */
   public GcsToBqLoadRunnable(BigQuery bigQuery, Bucket bucket) {
+    this(bigQuery, bucket, false, false, false);
+  }
+
+  public GcsToBqLoadRunnable(BigQuery bigQuery, Bucket bucket,
+                             boolean allowNewBigQueryFields,
+                             boolean allowRequiredFieldRelaxation,
+                             boolean gcsLoadAutodetect) {
     this.bigQuery = bigQuery;
     this.bucket = bucket;
+    this.allowNewBigQueryFields = allowNewBigQueryFields;
+    this.allowRequiredFieldRelaxation = allowRequiredFieldRelaxation;
+    this.gcsLoadAutodetect = gcsLoadAutodetect;
     this.activeJobs = new HashMap<>();
     this.claimedBlobIds = new HashSet<>();
     this.deletableBlobIds = new HashSet<>();
@@ -105,12 +121,26 @@ public class GcsToBqLoadRunnable implements Runnable {
    * @param deletableBlobIds the list of Blob Ids that can be deleted.
    */
   @VisibleForTesting
-  GcsToBqLoadRunnable(BigQuery bigQuery, Bucket bucket, Map<Job, List<BlobId>> activeJobs, Set<BlobId> claimedBlobIds, Set<BlobId> deletableBlobIds) {
+  GcsToBqLoadRunnable(BigQuery bigQuery, Bucket bucket, Map<Job, List<BlobId>> activeJobs,
+                      Set<BlobId> claimedBlobIds, Set<BlobId> deletableBlobIds) {
+    this(bigQuery, bucket, activeJobs, claimedBlobIds, deletableBlobIds,
+        false, false, false);
+  }
+
+  @VisibleForTesting
+  GcsToBqLoadRunnable(BigQuery bigQuery, Bucket bucket, Map<Job, List<BlobId>> activeJobs,
+                      Set<BlobId> claimedBlobIds, Set<BlobId> deletableBlobIds,
+                      boolean allowNewBigQueryFields,
+                      boolean allowRequiredFieldRelaxation,
+                      boolean gcsLoadAutodetect) {
     this.bigQuery = bigQuery;
     this.bucket = bucket;
     this.activeJobs = activeJobs;
     this.claimedBlobIds = claimedBlobIds;
     this.deletableBlobIds = deletableBlobIds;
+    this.allowNewBigQueryFields = allowNewBigQueryFields;
+    this.allowRequiredFieldRelaxation = allowRequiredFieldRelaxation;
+    this.gcsLoadAutodetect = gcsLoadAutodetect;
   }
 
   /**
@@ -214,20 +244,57 @@ public class GcsToBqLoadRunnable implements Runnable {
     return newJobs;
   }
 
-  private Job triggerBigQueryLoadJob(TableId table, List<Blob> blobs) {
+  @VisibleForTesting
+  Job triggerBigQueryLoadJob(TableId table, List<Blob> blobs) {
     List<String> uris = blobs.stream()
-        .map(b -> String.format(SOURCE_URI_FORMAT,
-            bucket.getName(),
-            b.getName()))
+        .map(b -> String.format(SOURCE_URI_FORMAT, bucket.getName(), b.getName()))
         .collect(Collectors.toList());
-    // create job load configuration
-    LoadJobConfiguration loadJobConfiguration =
-        LoadJobConfiguration.newBuilder(table, uris)
-            .setFormatOptions(FormatOptions.json())
+
+    Blob firstBlob = blobs.get(0);
+    String name = firstBlob.getName().toLowerCase();
+    boolean isCsv = name.endsWith(".csv");
+    boolean isAvro = name.endsWith(".avro");
+    boolean isParquet = name.endsWith(".parquet");
+    boolean isOrc = name.endsWith(".orc");
+    boolean isJson = name.endsWith(".json") || (!isCsv && !isAvro && !isParquet && !isOrc);
+
+    FormatOptions formatOptions;
+    if (isAvro) {
+      formatOptions = FormatOptions.avro();
+    } else if (isParquet) {
+      formatOptions = FormatOptions.parquet();
+    } else if (isOrc) {
+      formatOptions = FormatOptions.orc();
+    } else if (isCsv) {
+      formatOptions = FormatOptions.csv();
+    } else {
+      formatOptions = FormatOptions.json();
+    }
+
+    LoadJobConfiguration.Builder builder =
+        LoadJobConfiguration.newBuilder(table, uris, formatOptions)
             .setCreateDisposition(JobInfo.CreateDisposition.CREATE_IF_NEEDED)
-            .setWriteDisposition(JobInfo.WriteDisposition.WRITE_APPEND)
-            .build();
-    // create and return the job.
+            .setWriteDisposition(JobInfo.WriteDisposition.WRITE_APPEND);
+    List<JobInfo.SchemaUpdateOption> schemaOpts = new ArrayList<>(); // 1
+    if (allowNewBigQueryFields) {
+      schemaOpts.add(JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION);
+    }
+    if (allowRequiredFieldRelaxation) {
+      schemaOpts.add(JobInfo.SchemaUpdateOption.ALLOW_FIELD_RELAXATION);
+    }
+    if (!schemaOpts.isEmpty()) {
+      builder.setSchemaUpdateOptions(schemaOpts);
+    }
+    logger.info("Schema update options for load job on table {}: {}", table, schemaOpts);
+
+    boolean autodetect = gcsLoadAutodetect && (isJson || isCsv);
+    if (autodetect) {
+      builder.setAutodetect(true);
+    }
+    logger.info("Autodetect {} for load job on table {}", autodetect ? "enabled" : "disabled", table);
+
+    LoadJobConfiguration loadJobConfiguration = builder.build();
+
     Job job = bigQuery.create(JobInfo.of(loadJobConfiguration));
     // update active jobs and claimed blobs.
     List<BlobId> blobIds = blobs.stream().map(Blob::getBlobId).collect(Collectors.toList());
