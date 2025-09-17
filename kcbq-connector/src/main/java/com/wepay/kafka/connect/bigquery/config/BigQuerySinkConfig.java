@@ -427,8 +427,8 @@ public class BigQuerySinkConfig extends AbstractConfig {
   private static final ConfigDef.Importance DELETE_ENABLED_IMPORTANCE = ConfigDef.Importance.LOW;
   private static final String DELETE_ENABLED_DOC =
       "Enable delete functionality on the connector through the use of record keys, intermediate "
-          + "tables, and periodic merge flushes. A delete will be performed when a record with a null "
-          + "value (i.e., a tombstone record) is read.";
+            + "tables, and periodic merge flushes. A delete will be performed when a record with a null "
+            + "value (i.e., a tombstone record) is read.";
   private static final ConfigDef.Type INTERMEDIATE_TABLE_SUFFIX_TYPE = ConfigDef.Type.STRING;
   private static final ConfigDef.Validator INTERMEDIATE_TABLE_SUFFIX_VALIDATOR = new ConfigDef.NonEmptyString();
   private static final ConfigDef.Importance INTERMEDIATE_TABLE_SUFFIX_IMPORTANCE = ConfigDef.Importance.LOW;
